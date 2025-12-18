@@ -2,13 +2,16 @@ import tkinter as tk
 from tkinter import messagebox
 import sqlite3
 import random
-from PIL import Image, ImageTk  # Required for JPG support
+import pandas as pd
+from sqlalchemy import create_engine
+from PIL import Image, ImageTk
+
 
 class QuizApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Secondary Education Assessment")
-        self.root.geometry("450x750") # Height to accommodate the image
+        self.root.geometry("450x750")
 
         # Color Palette
         self.bg_blue = "#1e3d59"
@@ -22,7 +25,13 @@ class QuizApp:
         self.last_name = ""
         self.questions = []
         self.current_q_index = 0
-        self.quiz_image = None # Keep a reference to prevent garbage collection
+        self.quiz_image = None
+
+        # DATABASE SETTINGS
+        self.LOCAL_DB_PATH = 'prototype.db'
+        # IMPORTANT: Replace [PASSWORD] and [REF] with your actual Supabase DB credentials
+        #sb_secret_ggJTY5zeZ_thb_LdQsk3uw_2F61pC4B
+        self.SUPABASE_URL = "postgresql://postgres.mpceskickykhyxkjrgfz:hulmehackthon@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
 
         self.scores = {
             "Mathematics": 0, "EnglishLiterature": 0, "EnglishLanguage": 0,
@@ -31,7 +40,7 @@ class QuizApp:
         }
 
         try:
-            self.conn = sqlite3.connect("prototype.db")
+            self.conn = sqlite3.connect(self.LOCAL_DB_PATH)
             self.cursor = self.conn.cursor()
         except sqlite3.Error as e:
             messagebox.showerror("Database Error", f"Could not find or open database: {e}")
@@ -68,34 +77,26 @@ class QuizApp:
         if self.current_q_index < len(self.questions):
             subject, q_text, correct, incorrect, is_bool = self.questions[self.current_q_index]
 
-            # 1. Subject Header
             tk.Label(self.root, text=f"Subject: {subject}", font=("Arial", 10, "italic"),
                      bg=self.bg_blue, fg=self.btn_green).pack(pady=10)
 
-            # 2. Question Text
             tk.Label(self.root, text=q_text, wraplength=380, font=("Arial", 14),
                      bg=self.bg_blue, fg=self.text_white).pack(pady=15)
 
-            if is_bool:
-                options = ["True", "False"]
-            else:
-                options = [correct, incorrect]
+            options = ["True", "False"] if is_bool else [correct, incorrect]
             random.shuffle(options)
 
-            # 3. Answer Buttons (Orange)
             for opt in options:
                 tk.Button(self.root, text=opt, font=("Arial", 11, "bold"), width=25,
                           bg=self.btn_orange, fg="white", activebackground=self.btn_green,
                           cursor="hand2", pady=8,
                           command=lambda o=opt: self.process_answer(o, correct, subject)).pack(pady=10)
 
-            # 4. IMAGE ADDITION (Moved below options)
             try:
                 img = Image.open("AAR.jpg")
                 img = img.resize((250, 150), Image.Resampling.LANCZOS)
                 self.quiz_image = ImageTk.PhotoImage(img)
-                img_label = tk.Label(self.root, image=self.quiz_image, bg=self.bg_blue)
-                img_label.pack(pady=20) # Added a bit more padding for separation
+                tk.Label(self.root, image=self.quiz_image, bg=self.bg_blue).pack(pady=20)
             except Exception as e:
                 print(f"Image load error: {e}")
         else:
@@ -116,31 +117,56 @@ class QuizApp:
             placeholders = ', '.join(['?'] * len(columns))
             column_names = ', '.join(columns)
             query = f"INSERT INTO StudentGrades ({column_names}) VALUES ({placeholders})"
-            self.cursor.execute(query, values)
-            self.conn.commit()
-            self.show_results()
-        except sqlite3.Error as e:
-            messagebox.showerror("Save Error", f"Could not save to 'Results': {e}")
 
-    def show_results(self):
+            self.cursor.execute(query, values)
+            user_id = self.cursor.lastrowid  # Correct way to get ID after execute
+            self.conn.commit()
+            self.show_results(user_id)
+        except sqlite3.Error as e:
+            messagebox.showerror("Save Error", f"Could not save scores: {e}")
+
+    def push_local_to_supabase(self):
+        """Migrates the local SQLite data to Supabase PostgreSQL."""
+        try:
+            remote_engine = create_engine(self.SUPABASE_URL)
+            local_conn = sqlite3.connect(self.LOCAL_DB_PATH)
+
+            # Get list of tables
+            tables = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table';", local_conn)
+
+            for table_name in tables['name']:
+                if table_name.startswith('sqlite_'):
+                    continue
+
+                df = pd.read_sql_query(f"SELECT * FROM {table_name}", local_conn)
+                # Syncing to Supabase
+                df.to_sql(table_name, remote_engine, if_exists='replace', index=False)
+
+            print("Successfully pushed to Supabase.")
+            local_conn.close()
+        except Exception as e:
+            print(f"Supabase Sync Error: {e}")
+
+    def show_results(self, user_id):
         self.clear_screen()
+
+        tk.Label(self.root, text="Assessment Complete", font=("Arial", 14),
+                 bg=self.bg_blue, fg=self.text_white).pack(pady=(20, 0))
+        tk.Label(self.root, text=f"Student ID: {user_id}", font=("Arial", 12, "bold"),
+                 bg=self.bg_blue, fg=self.btn_green).pack(pady=5)
         tk.Label(self.root, text=f"Results: {self.last_name}", font=("Arial", 18, "bold"),
-                 bg=self.bg_blue, fg=self.btn_orange).pack(pady=20)
+                 bg=self.bg_blue, fg=self.btn_orange).pack(pady=10)
 
         score_frame = tk.Frame(self.root, bg=self.bg_blue)
         score_frame.pack()
 
         for sub, score in self.scores.items():
-            # Logic to determine text color based on score
-            if score < 0:
-                text_color = "#ff4d4d"  # Red
-            elif score > 0:
-                text_color = "#2ecc71"  # Green
-            else:
-                text_color = "#ffffff"  # White
-
+            text_color = "#ff4d4d" if score < 0 else ("#2ecc71" if score > 0 else "#ffffff")
             tk.Label(score_frame, text=f"{sub}: {score}", font=("Arial", 10, "bold"),
                      bg=self.bg_blue, fg=text_color).pack(anchor="w", pady=2)
+
+        # TRIGGER SYNC
+        self.push_local_to_supabase()
 
         tk.Button(self.root, text="Finish", font=("Arial", 12, "bold"),
                   bg=self.btn_green, fg="white", width=15,
@@ -149,6 +175,7 @@ class QuizApp:
     def clear_screen(self):
         for widget in self.root.winfo_children():
             widget.destroy()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
