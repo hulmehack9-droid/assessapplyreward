@@ -1,1 +1,1 @@
-SELECT *from QUESTIONS
+SELECT *from StudentGrades
